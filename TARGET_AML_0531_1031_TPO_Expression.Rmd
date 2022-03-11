@@ -1,0 +1,186 @@
+---
+title: "CD200 in Adult and Pediatric AML"
+author: "Jenny Smith"
+date: "June 24, 2019"
+output: html_document
+---
+
+# Set-up
+
+```{r setup}
+library(knitr)
+knitr::opts_chunk$set(tidy.opts=list(width.cutoff=50),tidy=TRUE, fig.align='center', fig.height = 8, fig.width = 10)
+knitr::opts_knit$set(root.dir = '/fh/fast/meshinchi_s/workingDir/TARGET/AML_TARGET/RNA/mRNAseq/analysis/2019.08.02_SAMDH1_CD200_Associations/')
+options(stringsAsFactors = FALSE)
+```
+
+```{r message=FALSE}
+library(dplyr)
+library(magrittr)
+library(ggplot2)
+library(stringr)
+library(reshape2)
+library(tidyr)
+library(tibble)
+library(ggpubr)
+library(DeGSEA)
+library(gridExtra)
+library(purrr)
+getwd()
+```
+
+```{r}
+source("~/scripts/RNAseq_Analysis/Waterfallplots_Expression_Distribution/Waterfall_Barplot_Function_2017.05.22.r")
+source("~/scripts/RNAseq_Analysis/DifferentialExpn_PathwayAnalysis/R/in_progress/ggplot_Themes_Function.r")
+source("~/scripts/survival_analysis/Survplot_Functions_2018.10.24.r")
+```
+
+
+#Read in the expression data 
+
+```{r}
+TPMs <- readRDS("~/RNA_seq_Analysis/0000.00.03_Expression_Matrices/TARGET_AML_RBD_Kallisto_Quant_GeneLevel_TPM.RDS")
+
+head(TPMs[,1:5])
+dim(TPMs)
+```
+
+
+
+
+#Read in the CDEs 
+
+```{r}
+Groups <- read.csv("~/reference_mapping-files/TARGET_AML_RBD_Cohorts_forDE_5.20.19.csv") %>% 
+  add_row(USI=grep("^BM|^RO", colnames(TPMs), value=TRUE)) %>%
+  mutate_at(vars(CBFA2T3.GLIS2.forDEGs:Rare.Fusions), .funs = ~ifelse(is.na(.), "NBM", .)) %>% 
+  set_colnames(gsub(".forDEGs","",colnames(.))) %>%
+  mutate(Categories=pheno_bars(., "USI", cols=c("CBFA2T3.GLIS2", "CBFB.MYH11", 
+                                                "KMT2A.ELL", "KMT2A.MLLT1",
+                                                "KMT2A.MLLT10","KMT2A.MLLT3",
+                                                "KMT2A.MLLT4", "NUP98.KDM5A", 
+                                                "NUP98.NSD1", "RUNX1.RUNX1T1"))) %>% 
+  mutate(Categories=case_when(
+    grepl("NBM", Categories) ~ "NBM", 
+    grepl("OtherAML", Categories) & grepl("MLL", Cytogenetic.Category.1) ~ "KM2TA-X",
+    grepl("OtherAML", Categories) & grepl("Normal", Cytogenetic.Category.1) ~ "Normal_Cyto", 
+    grepl("OtherAML", Categories) & grepl("Other", Cytogenetic.Category.1) ~ "Other_Cyto", 
+    TRUE ~ Categories))
+  
+
+head(Groups)
+# tail(Groups)
+dim(Groups)
+```
+
+```{r}
+table(Groups$Categories)
+```
+
+```{r}
+CDE <- read.csv("~/reference_mapping-files/TARGET_AML_RBD_withLncRNAs_LSC17_CDE_8.02.19.csv") %>% 
+  select(-contains("ENSG0"))
+
+# dim(CDE)
+# colnames(CDE)
+```
+
+```{r}
+merged <- read.csv("~/reference_mapping-files/TARGET_AML_0531_1031_merged_CDEs_3.01.19.csv")
+merged <- merged %>% 
+  filter(!is.na(USI))
+
+head(merged[,1:5])
+dim(merged)
+```
+
+```{r}
+WT1 <- read.csv("~/reference_mapping-files/1031 FLT3 ITD+ WT1 results 20190710.csv") %>% 
+  mutate(WT1.mutation=ifelse(grepl("Yes", WT1.Mutant...ex7.or.9.) | grepl("Yes", WT1.Exon.7.), "Yes", "No")) %>% 
+  filter(!WT1.Mutant...ex7.or.9. == "unknown" & !WT1.Exon.7. == "unknown") %>%
+  filter(!WT1.Mutant...ex7.or.9. == "unknown" | !WT1.Exon.7. == "unknown") %>% 
+  select(Reg.=Reg.No, everything())
+
+head(WT1)
+dim(WT1) #238   10
+```
+
+```{r}
+TPO <- TPMs[grep("ENSG00000090534", rownames(TPMs)), ] %>% 
+  rownames_to_column("gene_id") %>%
+  gather(USI, TPM, -gene_id) %>% 
+  mutate(gene_name="THPO",
+         gene_description="thrombopoietin",
+         log2_TPM=log2(TPM+1)) %>%
+  left_join(., Groups, by="USI") %>% 
+  mutate(AML=ifelse(grepl("^BM|^RO", USI), "NBM", AML)) %>%
+  left_join(., select(merged, USI,M7_AML), by="USI") %>% 
+  mutate(M7_AML=case_when(
+    is.na(M7_AML) & AML=="NBM" ~ "NBM", 
+    is.na(M7_AML) & AML=="AML" ~ "Unknown", 
+    TRUE ~ M7_AML)) %>% 
+  mutate(Categories=factor(Categories, levels=c("NBM",unique(.$Categories)[-1])))
+
+
+# head(TPO)
+dim(TPO)
+table(TPO$M7_AML, useNA = "always")
+table(TPO$AML, useNA = "always")
+```
+
+```{r}
+quantile(TPO$TPM)
+```
+
+```{r fig.height=6, fig.width=16}
+ggplot(data=TPO, aes(x=Categories, y=log2_TPM, fill=Categories)) + 
+  geom_violin(draw_quantiles = 0.5) +
+  theme_bw()
+```
+
+```{r fig.height=4, fig.width=7}
+ggplot(data=filter(TPO, grepl("NBM|GLIS2", Categories), !grepl("Unknown", M7_AML)),
+       aes(x=Categories, y=log2_TPM, fill=M7_AML)) + 
+  geom_violin(draw_quantiles = 0.5) +
+  theme_bw()
+
+table(filter(TPO, grepl("NBM|GLIS2", Categories), !grepl("Unknown", M7_AML))$M7_AML)
+```
+
+
+
+```{r}
+set.seed(2019)
+forTiffany <- merged %>% 
+  filter(!is.na(Reg.)) %>%
+  filter(WT1.mutation=="Yes" | FLT3.ITD.positive. == "Yes"| CEBPA.mutation == "Yes" | NPM.mutation == "Yes") %>% 
+  filter(Protocol != "AAML1031") %>% 
+  select(Reg., WT1.mutation, FLT3.ITD.positive., CEBPA.mutation, NPM.mutation) %>% 
+  filter_all(all_vars(. != "Unknown")) %>% 
+  sample_n(60,replace = FALSE) %>% 
+  
+  bind_rows(., merged %>% 
+                filter(!is.na(Reg.)) %>%
+                filter(Protocol != "AAML1031") %>% 
+                filter(WT1.mutation=="No" , 
+                         FLT3.ITD.positive. == "No",
+                         CEBPA.mutation == "No" ,
+                         NPM.mutation == "No") %>% 
+                select(Reg., WT1.mutation, FLT3.ITD.positive.,
+                       CEBPA.mutation, NPM.mutation) %>% 
+                sample_n(15,replace = FALSE) %>% 
+              mutate(Neg_Controls=TRUE)) %>% 
+  
+  mutate(Neg_Controls=ifelse(is.na(Neg_Controls), FALSE, Neg_Controls))
+  
+
+
+dim(forTiffany)
+lapply(forTiffany[,-1], table)
+# write.csv(forTiffany, "~/Patient_IDs_for_Summer_Students.csv", row.names = FALSE)
+```
+
+
+
+
+
